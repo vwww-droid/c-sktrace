@@ -48,6 +48,10 @@ def _parse_args():
                         help="Prepend a Frida script to run before sktrace does.")
     parser.add_argument("-a", "--append", type=argparse.FileType("r"),
                         help="Append a Frida script to run after sktrace has started.")
+    parser.add_argument("-U", "--usb", action="store_true",
+                        help="Connect to USB device (default).")
+    parser.add_argument("-H", "--host",
+                        help="Connect to remote frida-server on HOST (e.g., 127.0.0.1:65320).")
     parser.add_argument("-v", "--version", action='version',
                         version="%(prog)s " + __version__,
                         help="Show the version.")
@@ -82,7 +86,14 @@ def main():
     else:
         config["payload"]["symbol"] = args.interceptor
     
-    device = frida.get_usb_device(1)
+    # 根据参数选择连接设备的方式
+    if args.host:
+        # 连接到远程 frida-server
+        device = frida.get_device_manager().add_remote_device(args.host)
+    else:
+        # 默认使用 USB 设备
+        device = frida.get_usb_device(1)
+    
     if args.inject_method == "spawn":
         raise Exception("working for this ...")
         pid = device.spawn([args.target])
