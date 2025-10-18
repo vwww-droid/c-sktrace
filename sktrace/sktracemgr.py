@@ -53,9 +53,9 @@ class Inst:
             if pre_ctx.sp != ctx.sp:
                 if "sp" not in self.changed_regs_dict:
                     self.changed_regs_dict["sp"] = []
-                    self.changed_regs_dict["sp"].append(ctx.sp)
-                    if print_every_change:
-                        eveny_change_str = ("{}\t; sp={}->{}".format(self.simple_str(), pre_ctx.sp, ctx.sp))
+                self.changed_regs_dict["sp"].append(ctx.sp)
+                if print_every_change:
+                    eveny_change_str = ("{}\t; sp={}->{}".format(self.simple_str(), hex(pre_ctx.sp), hex(ctx.sp)))
             for i in range(31):
                 if pre_ctx.general_regs[i] != ctx.general_regs[i]:
                     if "x"+str(i) not in self.changed_regs_dict:
@@ -63,9 +63,9 @@ class Inst:
                     self.changed_regs_dict["x"+str(i)].append(ctx.general_regs[i])
                     if print_every_change:
                         if eveny_change_str:
-                            eveny_change_str += (", x{}={}->{}".format(str(i), pre_ctx.general_regs[i], ctx.general_regs[i]))
+                            eveny_change_str += (", x{}={}->{}".format(str(i), hex(pre_ctx.general_regs[i]), hex(ctx.general_regs[i])))
                         else:
-                            eveny_change_str = ("{}\t; x{}={}->{}".format(self.simple_str(), str(i), pre_ctx.general_regs[i], ctx.general_regs[i]))
+                            eveny_change_str = ("{}\t; x{}={}->{}".format(self.simple_str(), str(i), hex(pre_ctx.general_regs[i]), hex(ctx.general_regs[i])))
 
         if print_every_change and eveny_change_str:
             print(eveny_change_str)
@@ -79,8 +79,17 @@ class Inst:
         for reg in self.changed_regs_dict:
             try_str = ""
             change_val_arr = self.changed_regs_dict[reg]
+            # 确保是列表
+            if not isinstance(change_val_arr, list):
+                change_val_arr = [change_val_arr]
+            
             for val in change_val_arr:
-                val_int = int(val, 16)
+                # 处理 int 或 str 类型
+                if isinstance(val, int):
+                    val_int = val
+                else:
+                    val_int = int(val, 16)
+                
                 if val_int < 0x7f and val_int >= 0x20:
                     try_str += chr(val_int)
                 else:
@@ -98,7 +107,13 @@ class Inst:
         if self.changed_regs_dict:
             change_line = "statistics"
             for reg in self.changed_regs_dict:
-                change_reg = "\t{}:{}".format(reg, ",".join(self.changed_regs_dict[reg]))
+                # 将 int 值转换为 hex 字符串
+                vals = self.changed_regs_dict[reg]
+                if isinstance(vals, list):
+                    val_strs = [hex(v) if isinstance(v, int) else v for v in vals]
+                else:
+                    val_strs = [hex(vals) if isinstance(vals, int) else vals]
+                change_reg = "\t{}:{}".format(reg, ",".join(val_strs))
                 change_line += change_reg
             print(change_line)
     
@@ -168,7 +183,10 @@ class TraceMgr:
             return
         if msg['type'] == 'send':
             payload = msg['payload']
-            tid = payload['tid']
+            tid = payload.get('tid')
+            if tid is None:
+                # 忽略没有 tid 的消息
+                return
             if tid not in self.tid_trace_dict:
                 self.tid_trace_dict[tid] = Arm64TraceLog(tid)
     
@@ -209,6 +227,69 @@ class Arm64TraceLog:
             self.inst_dict[ctx.pc].cal_regs_change(self.pre_ctx, ctx)
             self.pre_ctx = ctx
             pass
+        elif type == 'c_output':
+            # 处理 C 版本输出
+            message = payload['message']
+            
+            # 区分两种格式:
+            # 1. 指令信息: addr\tmnemonic\top_str (tab 分隔, 3个字段)
+            # 2. 寄存器信息: addr|x0|x1|...|sp|pc (管道分隔, 34个字段)
+            
+            if '|' in message:
+                # 寄存器信息
+                parts = message.split('|')
+                if len(parts) == 34:
+                    try:
+                        # 解析字段
+                        addr = parts[0]  # 指令地址
+                        x_regs = [int(parts[i], 16) for i in range(1, 30)]  # x0-x28
+                        fp = int(parts[30], 16)
+                        lr = int(parts[31], 16)
+                        sp = int(parts[32], 16)
+                        pc = int(parts[33], 16)
+                        
+                        # 创建 Arm64Ctx 对象
+                        ctx = Arm64Ctx(pc, sp, *x_regs, fp, lr)
+                        
+                        # 如果指令不存在，创建一个临时的
+                        if addr not in self.inst_dict:
+                            # 创建临时指令对象 (后续会被 transform 的输出替换)
+                            inst = Inst(addr, addr, 4, "unknown", "")
+                            self.inst_dict[addr] = inst
+                            if addr not in self.block_dict:
+                                self.block_dict[addr] = Block(addr)
+                            self.block_dict[addr].append_inst(inst)
+                        
+                        self.inst_dict[addr].add_execed_ctx(ctx)
+                        self.inst_dict[addr].cal_regs_change(self.pre_ctx, ctx)
+                        self.pre_ctx = ctx
+                    except Exception as e:
+                        print(f"Error parsing c_output register: {e}, message: {message}")
+            elif '\t' in message:
+                # 指令信息
+                parts = message.split('\t')
+                if len(parts) == 3:
+                    try:
+                        addr = parts[0]
+                        mnem = parts[1]
+                        op = parts[2]
+                        
+                        # 创建指令对象
+                        inst = Inst(addr, addr, 4, mnem, op)  # 假设 ARM64 指令 size=4
+                        
+                        # 如果已经存在，更新信息
+                        if addr in self.inst_dict:
+                            # 更新已存在的临时指令
+                            self.inst_dict[addr].mnem = mnem
+                            self.inst_dict[addr].op = op
+                        else:
+                            # 创建新的
+                            if addr not in self.block_dict:
+                                self.block_dict[addr] = Block(addr)
+                            self.block_dict[addr].append_inst(inst)
+                            self.inst_dict[addr] = inst
+                    except Exception as e:
+                        print(f"Error parsing c_output inst: {e}, message: {message}")
         elif type == "fin":
             self.statistics()
             pass
