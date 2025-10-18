@@ -86,9 +86,7 @@ def main():
     else:
         config["payload"]["symbol"] = args.interceptor
     
-    # 根据参数选择连接设备的方式
     if args.host:
-        # 连接到远程 frida-server
         device = frida.get_device_manager().add_remote_device(args.host)
     else:
         # 默认使用 USB 设备
